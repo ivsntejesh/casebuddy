@@ -9,9 +9,14 @@ import {
   addDoc, 
   serverTimestamp,
   orderBy,
-  limit
+  limit,
+  doc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove
 } from 'firebase/firestore';
 import { Question, Answer } from '../types';
+import { geminiService } from '../lib/gemini';
 import { 
   Clock, 
   BookOpen, 
@@ -19,16 +24,28 @@ import {
   Users, 
   CheckCircle,
   ArrowRight,
-  Target
+  Target,
+  ThumbsUp,
+  Sparkles,
+  Bot,
+  User,
+  Loader,
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 
 export default function HomePage() {
   const { user } = useAuth();
   const [todaysQuestion, setTodaysQuestion] = useState<Question | null>(null);
   const [userAnswer, setUserAnswer] = useState<Answer | null>(null);
+  const [allAnswers, setAllAnswers] = useState<Answer[]>([]);
+  const [aiAnswer, setAiAnswer] = useState<Answer | null>(null);
   const [newAnswer, setNewAnswer] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [loadingAI, setLoadingAI] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [showAllAnswers, setShowAllAnswers] = useState(false);
   const [stats, setStats] = useState({
     totalQuestions: 0,
     totalUsers: 0,
@@ -45,23 +62,19 @@ export default function HomePage() {
   const fetchTodaysQuestion = async () => {
     try {
       console.log('🔍 Starting to fetch today\'s question...');
-      console.log('🔍 User:', user?.uid);
       
       // Get today's active question
       const questionsRef = collection(db, 'questions');
-      console.log('🔍 Questions collection reference created');
-      
       const q = query(questionsRef, where('isActive', '==', true), limit(1));
-      console.log('🔍 Query created for isActive = true');
-      
       const snapshot = await getDocs(q);
-      console.log('🔍 Snapshot received, empty?', snapshot.empty);
-      console.log('🔍 Number of docs found:', snapshot.size);
       
       if (!snapshot.empty) {
         const questionData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Question;
-        console.log('🔍 Question data found:', questionData);
+        console.log('✅ Question data found:', questionData);
         setTodaysQuestion(questionData);
+        
+        // Fetch all answers for this question
+        await fetchAnswersForQuestion(questionData.id);
         
         // Check if user has already answered
         const answersRef = collection(db, 'answers');
@@ -74,26 +87,44 @@ export default function HomePage() {
         
         if (!answerSnapshot.empty) {
           const answerData = { id: answerSnapshot.docs[0].id, ...answerSnapshot.docs[0].data() } as Answer;
-          console.log('🔍 User answer found:', answerData);
+          console.log('✅ User answer found:', answerData);
           setUserAnswer(answerData);
         }
       } else {
-        console.log('❌ No active questions found in Firestore');
-        
-        // Let's also try to get ALL questions to see what's in the collection
-        const allQuestionsSnapshot = await getDocs(collection(db, 'questions'));
-        console.log('🔍 All questions in collection:', allQuestionsSnapshot.size);
-        allQuestionsSnapshot.forEach(doc => {
-          console.log('🔍 Question doc:', doc.id, doc.data());
-        });
+        console.log('⚠️ No active questions found in Firestore');
       }
     } catch (error) {
       console.error('❌ Error fetching today\'s question:', error);
-      if (typeof error === 'object' && error !== null && 'code' in error && 'message' in error) {
-        console.error('❌ Error details:', (error as { code?: any; message?: any }).code, (error as { code?: any; message?: any }).message);
-      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchAnswersForQuestion = async (questionId: string) => {
+    try {
+      const answersRef = collection(db, 'answers');
+      const answersQuery = query(
+        answersRef,
+        where('questionId', '==', questionId),
+        orderBy('upvotes', 'desc')
+      );
+      const answersSnapshot = await getDocs(answersQuery);
+      
+      const answers = answersSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Answer[];
+      
+      // Separate AI answer from user answers
+      const userAnswers = answers.filter(a => a.userId !== 'ai-assistant');
+      const aiAnswerData = answers.find(a => a.userId === 'ai-assistant');
+      
+      setAllAnswers(userAnswers);
+      if (aiAnswerData) {
+        setAiAnswer(aiAnswerData);
+      }
+    } catch (error) {
+      console.error('Error fetching answers:', error);
     }
   };
 
@@ -130,7 +161,7 @@ export default function HomePage() {
         createdAt: serverTimestamp()
       });
 
-      setUserAnswer({
+      const newAnswerData: Answer = {
         id: docRef.id,
         questionId: todaysQuestion.id,
         userId: user.uid,
@@ -139,14 +170,131 @@ export default function HomePage() {
         upvotes: 0,
         upvotedBy: [],
         createdAt: new Date()
-      });
+      };
 
+      setUserAnswer(newAnswerData);
+      setAllAnswers(prev => [newAnswerData, ...prev]);
       setNewAnswer('');
+      
+      // Show all answers after submitting
+      setShowAllAnswers(true);
     } catch (error) {
       console.error('Error submitting answer:', error);
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleUpvote = async (answerId: string, isCurrentlyUpvoted: boolean) => {
+    if (!user) return;
+
+    try {
+      const answerRef = doc(db, 'answers', answerId);
+      
+      // Find the answer to get current upvote count
+      let targetAnswer = allAnswers.find(a => a.id === answerId);
+      if (!targetAnswer && aiAnswer?.id === answerId) {
+        targetAnswer = aiAnswer;
+      }
+      if (!targetAnswer) return;
+
+      const newUpvoteCount = isCurrentlyUpvoted 
+        ? targetAnswer.upvotes - 1 
+        : targetAnswer.upvotes + 1;
+      
+      if (isCurrentlyUpvoted) {
+        await updateDoc(answerRef, {
+          upvotedBy: arrayRemove(user.uid),
+          upvotes: newUpvoteCount
+        });
+      } else {
+        await updateDoc(answerRef, {
+          upvotedBy: arrayUnion(user.uid),
+          upvotes: newUpvoteCount
+        });
+      }
+
+      // Update local state immediately
+      const updateAnswer = (answer: Answer) => ({
+        ...answer,
+        upvotes: newUpvoteCount,
+        upvotedBy: isCurrentlyUpvoted 
+          ? answer.upvotedBy.filter(id => id !== user.uid)
+          : [...answer.upvotedBy, user.uid]
+      });
+
+      setAllAnswers(prev => 
+        prev.map(answer => 
+          answer.id === answerId ? updateAnswer(answer) : answer
+        )
+      );
+
+      if (aiAnswer?.id === answerId) {
+        setAiAnswer(updateAnswer(aiAnswer));
+      }
+
+      if (userAnswer?.id === answerId) {
+        setUserAnswer(updateAnswer(userAnswer));
+      }
+    } catch (error) {
+      console.error('Error updating upvote:', error);
+    }
+  };
+
+  const generateAIAnswer = async () => {
+    if (!todaysQuestion || loadingAI || aiAnswer) return;
+
+    setLoadingAI(true);
+    setAiError(null);
+    
+    try {
+      console.log('🤖 Starting AI generation...');
+      
+      const aiResponse = await geminiService.generateCaseStudyResponse(
+        todaysQuestion.title,
+        todaysQuestion.description,
+        todaysQuestion.type,
+        todaysQuestion.difficulty
+      );
+
+      console.log('✅ AI response received:', aiResponse);
+
+      // Save AI answer to database
+      const aiAnswerRef = await addDoc(collection(db, 'answers'), {
+        questionId: todaysQuestion.id,
+        userId: 'ai-assistant',
+        userDisplayName: 'AI Assistant',
+        content: aiResponse.content,
+        upvotes: 0,
+        upvotedBy: [],
+        createdAt: serverTimestamp(),
+        isAIGenerated: true
+      });
+
+      const aiAnswerData: Answer = {
+        id: aiAnswerRef.id,
+        questionId: todaysQuestion.id,
+        userId: 'ai-assistant',
+        userDisplayName: 'AI Assistant',
+        content: aiResponse.content,
+        upvotes: 0,
+        upvotedBy: [],
+        createdAt: new Date()
+      };
+
+      setAiAnswer(aiAnswerData);
+      setShowAllAnswers(true);
+    } catch (error) {
+      console.error('❌ Error generating AI answer:', error);
+      setAiError(error instanceof Error ? error.message : 'Failed to generate AI response');
+    } finally {
+      setLoadingAI(false);
+    }
+  };
+
+  const retryAIGeneration = () => {
+    setAiError(null);
+    generateAIAnswer();
   };
 
   const formatDate = (date: any) => {
@@ -267,28 +415,179 @@ export default function HomePage() {
               </div>
 
               {userAnswer ? (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-center space-x-2 mb-3">
-                    <CheckCircle className="w-5 h-5 text-green-600" />
-                    <h3 className="font-semibold text-green-800">Your Solution Submitted</h3>
+                <div className="space-y-6">
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-center space-x-2 mb-3">
+                      <CheckCircle className="w-5 h-5 text-green-600" />
+                      <h3 className="font-semibold text-green-800">Your Solution Submitted</h3>
+                    </div>
+                    <p className="text-green-700 mb-3 whitespace-pre-wrap">
+                      {userAnswer.content}
+                    </p>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-green-600">
+                        Submitted on {formatDate(userAnswer.createdAt)}
+                      </span>
+                      <button
+                        onClick={() => handleUpvote(
+                          userAnswer.id, 
+                          userAnswer.upvotedBy.includes(user?.uid || '')
+                        )}
+                        className={`flex items-center space-x-1 px-3 py-1 rounded-full transition duration-200 ${
+                          userAnswer.upvotedBy.includes(user?.uid || '')
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-white text-gray-600 hover:bg-green-50'
+                        }`}
+                      >
+                        <ThumbsUp className="w-4 h-4" />
+                        <span>{userAnswer.upvotes}</span>
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-green-700 mb-3 whitespace-pre-wrap">
-                    {userAnswer.content}
-                  </p>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-green-600">
-                      Submitted on {formatDate(userAnswer.createdAt)}
-                    </span>
-                    <span className="text-green-600">
-                      {userAnswer.upvotes} upvotes
-                    </span>
-                  </div>
-                  <div className="mt-4 pt-4 border-t border-green-200">
+
+                  {/* AI Answer Section */}
+                  {loadingAI && (
+                    <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                      <div className="flex items-center space-x-2 mb-3">
+                        <Loader className="w-5 h-5 text-purple-600 animate-spin" />
+                        <Bot className="w-5 h-5 text-purple-600" />
+                        <span className="font-semibold text-purple-900">AI Assistant</span>
+                        <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full">
+                          Generating...
+                        </span>
+                      </div>
+                      <p className="text-purple-700">Analyzing the case and generating expert insights...</p>
+                    </div>
+                  )}
+
+                  {aiError && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                      <div className="flex items-center space-x-2 mb-3">
+                        <AlertCircle className="w-5 h-5 text-red-600" />
+                        <span className="font-semibold text-red-900">AI Generation Failed</span>
+                      </div>
+                      <p className="text-red-700 mb-3">{aiError}</p>
+                      <button
+                        onClick={retryAIGeneration}
+                        className="flex items-center space-x-2 bg-red-100 hover:bg-red-200 text-red-700 font-medium py-2 px-4 rounded-lg transition duration-200"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        <span>Retry Generation</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {aiAnswer ? (
+                    <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center space-x-2">
+                          <Bot className="w-5 h-5 text-purple-600" />
+                          <span className="font-semibold text-purple-900">AI Expert Analysis</span>
+                          <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full">
+                            AI Generated
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => handleUpvote(
+                            aiAnswer.id, 
+                            aiAnswer.upvotedBy.includes(user?.uid || '')
+                          )}
+                          className={`flex items-center space-x-1 px-3 py-1 rounded-full transition duration-200 ${
+                            aiAnswer.upvotedBy.includes(user?.uid || '')
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-white text-gray-600 hover:bg-purple-50'
+                          }`}
+                        >
+                          <ThumbsUp className="w-4 h-4" />
+                          <span>{aiAnswer.upvotes}</span>
+                        </button>
+                      </div>
+                      <div className="prose prose-purple max-w-none">
+                        <p className="text-gray-800 whitespace-pre-wrap leading-relaxed">
+                          {aiAnswer.content}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    !loadingAI && !aiError && (
+                      <div className="bg-white border-2 border-dashed border-purple-200 rounded-lg p-6 text-center">
+                        <Bot className="w-12 h-12 text-purple-400 mx-auto mb-3" />
+                        <h3 className="text-lg font-semibold text-gray-900 mb-2">Get AI Expert Analysis</h3>
+                        <p className="text-gray-600 mb-4">
+                          See how an AI expert would approach this case study
+                        </p>
+                        <button
+                          onClick={generateAIAnswer}
+                          className="inline-flex items-center space-x-2 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white font-medium py-2 px-6 rounded-lg transition duration-200"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          <span>Generate AI Analysis</span>
+                        </button>
+                      </div>
+                    )
+                  )}
+
+                  {/* Other Solutions */}
+                  {allAnswers.filter(a => a.id !== userAnswer.id).length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-semibold text-gray-900">
+                          Other Solutions ({allAnswers.filter(a => a.id !== userAnswer.id).length})
+                        </h3>
+                        <button
+                          onClick={() => setShowAllAnswers(!showAllAnswers)}
+                          className="text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                          {showAllAnswers ? 'Hide' : 'Show'} All
+                        </button>
+                      </div>
+
+                      {showAllAnswers && (
+                        <div className="space-y-4">
+                          {allAnswers
+                            .filter(a => a.id !== userAnswer.id)
+                            .sort((a, b) => b.upvotes - a.upvotes)
+                            .map((answer) => (
+                            <div key={answer.id} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center space-x-2">
+                                  <User className="w-4 h-4 text-gray-600" />
+                                  <span className="font-medium text-gray-900">{answer.userDisplayName}</span>
+                                  <span className="text-sm text-gray-500">
+                                    {formatDate(answer.createdAt)}
+                                  </span>
+                                </div>
+                                <button
+                                  onClick={() => handleUpvote(
+                                    answer.id, 
+                                    answer.upvotedBy.includes(user?.uid || '')
+                                  )}
+                                  className={`flex items-center space-x-1 px-3 py-1 rounded-full transition duration-200 ${
+                                    answer.upvotedBy.includes(user?.uid || '')
+                                      ? 'bg-blue-100 text-blue-700'
+                                      : 'bg-white text-gray-600 hover:bg-blue-50'
+                                  }`}
+                                >
+                                  <ThumbsUp className="w-4 h-4" />
+                                  <span>{answer.upvotes}</span>
+                                </button>
+                              </div>
+                              <p className="text-gray-800 whitespace-pre-wrap leading-relaxed">
+                                {answer.content}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="mt-6 pt-6 border-t border-gray-200">
                     <a 
                       href="/past-questions" 
-                      className="inline-flex items-center text-green-700 hover:text-green-800 font-medium"
+                      className="inline-flex items-center text-blue-700 hover:text-blue-800 font-medium"
                     >
-                      View all solutions <ArrowRight className="w-4 h-4 ml-1" />
+                      Practice more cases <ArrowRight className="w-4 h-4 ml-1" />
                     </a>
                   </div>
                 </div>
@@ -362,11 +661,22 @@ export default function HomePage() {
               </a>
               
               <a 
-                href="/profile"
+                href="/admin"
                 className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition duration-200"
               >
                 <div className="flex items-center space-x-3">
                   <Target className="w-5 h-5 text-gray-600" />
+                  <span className="font-medium">Admin Panel</span>
+                </div>
+                <ArrowRight className="w-4 h-4 text-gray-400" />
+              </a>
+
+              <a 
+                href="/profile"
+                className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition duration-200"
+              >
+                <div className="flex items-center space-x-3">
+                  <User className="w-5 h-5 text-gray-600" />
                   <span className="font-medium">My Progress</span>
                 </div>
                 <ArrowRight className="w-4 h-4 text-gray-400" />
@@ -383,6 +693,23 @@ export default function HomePage() {
               <li>• Show your calculations</li>
               <li>• Consider multiple perspectives</li>
               <li>• Provide actionable recommendations</li>
+            </ul>
+          </div>
+
+          {/* AI Features Info */}
+          <div className="bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
+            <div className="flex items-center space-x-2 mb-3">
+              <Sparkles className="w-5 h-5 text-purple-600" />
+              <h3 className="text-lg font-semibold text-purple-900">AI-Powered Learning</h3>
+            </div>
+            <p className="text-sm text-purple-800 mb-3">
+              Get expert-level analysis and insights for every case study using advanced AI.
+            </p>
+            <ul className="text-xs text-purple-700 space-y-1">
+              <li>• Structured frameworks</li>
+              <li>• Step-by-step analysis</li>
+              <li>• Alternative perspectives</li>
+              <li>• Best practices</li>
             </ul>
           </div>
         </div>
