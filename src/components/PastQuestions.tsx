@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { db } from '../lib/firebase';
+import { isUserAdmin } from '../lib/adminConfig';
 import { 
   collection, 
   query, 
@@ -26,7 +27,8 @@ import {
   ChevronUp,
   Sparkles,
   Loader,
-  Bot
+  Bot,
+  Shield
 } from 'lucide-react';
 
 interface QuestionWithAnswers extends Question {
@@ -40,6 +42,7 @@ export default function PastQuestions() {
   const { user } = useAuth();
   const [questions, setQuestions] = useState<QuestionWithAnswers[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [filter, setFilter] = useState<{
     type: 'all' | 'consulting' | 'product';
     difficulty: 'all' | 'easy' | 'medium' | 'hard';
@@ -49,8 +52,17 @@ export default function PastQuestions() {
   });
 
   useEffect(() => {
+  if (user) {
+    checkAdminStatus();
     fetchQuestionsAndAnswers();
-  }, []);
+  }
+  }, [user]);
+
+  const checkAdminStatus = () => {
+    if (user?.email) {
+      setIsAdmin(isUserAdmin(user.email));
+    }
+  };
 
   const fetchQuestionsAndAnswers = async () => {
     try {
@@ -59,7 +71,7 @@ export default function PastQuestions() {
       const questionsQuery = query(questionsRef, orderBy('datePosted', 'desc'));
       const questionsSnapshot = await getDocs(questionsQuery);
 
-      // Fetch all answers
+      // Fetch all answers (including AI answers)
       const answersRef = collection(db, 'answers');
       const answersQuery = query(answersRef, orderBy('createdAt', 'desc'));
       const answersSnapshot = await getDocs(answersQuery);
@@ -71,11 +83,16 @@ export default function PastQuestions() {
 
       const questionsData: QuestionWithAnswers[] = questionsSnapshot.docs.map(doc => {
         const questionData = { id: doc.id, ...doc.data() } as Question;
-        const questionAnswers = answersData.filter(answer => answer.questionId === questionData.id);
+        
+        // Separate AI answers from user answers
+        const allAnswers = answersData.filter(answer => answer.questionId === questionData.id);
+        const aiAnswer = allAnswers.find(answer => answer.userId === 'ai-assistant');
+        const userAnswers = allAnswers.filter(answer => answer.userId !== 'ai-assistant');
         
         return {
           ...questionData,
-          answers: questionAnswers,
+          answers: userAnswers,
+          aiAnswer: aiAnswer, // This will be undefined if no AI answer exists
           showAnswers: false,
           loadingAI: false
         };
@@ -112,20 +129,18 @@ export default function PastQuestions() {
       const newUpvotes = isCurrentlyUpvoted ? currentUpvotes - 1 : currentUpvotes + 1;
       
       if (isCurrentlyUpvoted) {
-        // Remove upvote
         await updateDoc(answerRef, {
           upvotedBy: arrayRemove(user.uid),
           upvotes: newUpvotes
         });
       } else {
-        // Add upvote
         await updateDoc(answerRef, {
           upvotedBy: arrayUnion(user.uid),
           upvotes: newUpvotes
         });
       }
 
-      // Update local state immediately for better UX
+      // Update local state
       setQuestions(prevQuestions =>
         prevQuestions.map(question => ({
           ...question,
@@ -141,7 +156,6 @@ export default function PastQuestions() {
             }
             return answer;
           }),
-          // Also update AI answer if it's the one being upvoted
           aiAnswer: question.aiAnswer?.id === answerId ? {
             ...question.aiAnswer,
             upvotes: newUpvotes,
@@ -156,9 +170,7 @@ export default function PastQuestions() {
     }
   };
 
-  const toggleAnswers = async (questionIndex: number) => {
-    const question = questions[questionIndex];
-    
+  const toggleAnswers = (questionIndex: number) => {
     setQuestions(prev => 
       prev.map((q, index) => 
         index === questionIndex 
@@ -166,15 +178,21 @@ export default function PastQuestions() {
           : q
       )
     );
-
-    // Load AI answer if not already loaded and answers are being shown
-    if (!question.showAnswers && !question.aiAnswer && !question.loadingAI) {
-      await generateAIAnswer(questionIndex);
-    }
   };
 
   const generateAIAnswer = async (questionIndex: number) => {
+    if (!isAdmin) {
+      alert('Only administrators can generate AI answers.');
+      return;
+    }
+
     const question = questions[questionIndex];
+    
+    // Check if AI answer already exists
+    if (question.aiAnswer) {
+      alert('AI answer already exists for this question.');
+      return;
+    }
     
     setQuestions(prev => 
       prev.map((q, index) => 
@@ -224,6 +242,7 @@ export default function PastQuestions() {
       );
     } catch (error) {
       console.error('Error generating AI answer:', error);
+      alert('Failed to generate AI answer. Please try again.');
       setQuestions(prev => 
         prev.map((q, index) => 
           index === questionIndex 
@@ -381,23 +400,22 @@ export default function PastQuestions() {
               {/* Answers Section */}
               {question.showAnswers && (
                 <div className="p-6">
-                  {/* AI Answer */}
+                  {/* AI Answer Loading State */}
                   {question.loadingAI && (
                     <div className="mb-6 p-4 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg">
                       <div className="flex items-center space-x-2 mb-3">
-                        <div className="flex items-center space-x-2">
-                          <Loader className="w-5 h-5 text-purple-600 animate-spin" />
-                          <Bot className="w-5 h-5 text-purple-600" />
-                          <span className="font-semibold text-purple-900">AI Assistant</span>
-                          <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full">
-                            Generating...
-                          </span>
-                        </div>
+                        <Loader className="w-5 h-5 text-purple-600 animate-spin" />
+                        <Bot className="w-5 h-5 text-purple-600" />
+                        <span className="font-semibold text-purple-900">AI Assistant</span>
+                        <span className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full">
+                          Generating...
+                        </span>
                       </div>
                       <p className="text-purple-700">Generating expert analysis...</p>
                     </div>
                   )}
 
+                  {/* Existing AI Answer */}
                   {question.aiAnswer && (
                     <div className="mb-6 p-4 bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg">
                       <div className="flex items-center justify-between mb-3">
@@ -431,6 +449,25 @@ export default function PastQuestions() {
                     </div>
                   )}
 
+                  {/* Admin: Generate AI Answer Button */}
+                  {isAdmin && !question.aiAnswer && !question.loadingAI && (
+                    <div className="mb-6 p-4 bg-white border-2 border-dashed border-purple-200 rounded-lg">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <Shield className="w-5 h-5 text-purple-600" />
+                          <span className="font-medium text-gray-900">Admin Controls</span>
+                        </div>
+                        <button
+                          onClick={() => generateAIAnswer(index)}
+                          className="flex items-center space-x-2 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white font-medium py-2 px-4 rounded-lg transition duration-200"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          <span>Generate AI Analysis</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* User Answers */}
                   {question.answers.length > 0 ? (
                     <div className="space-y-4">
@@ -438,7 +475,7 @@ export default function PastQuestions() {
                         Community Solutions ({question.answers.length})
                       </h4>
                       {question.answers
-                        .sort((a, b) => b.upvotes - a.upvotes) // Sort by upvotes descending
+                        .sort((a, b) => b.upvotes - a.upvotes)
                         .map((answer) => (
                         <div key={answer.id} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
                           <div className="flex items-center justify-between mb-3">
@@ -474,15 +511,6 @@ export default function PastQuestions() {
                     <div className="text-center py-8 text-gray-500">
                       <MessageSquare className="w-12 h-12 mx-auto mb-2 opacity-50" />
                       <p>No community solutions yet.</p>
-                      {!question.aiAnswer && !question.loadingAI && (
-                        <button
-                          onClick={() => generateAIAnswer(index)}
-                          className="mt-3 inline-flex items-center space-x-2 text-purple-600 hover:text-purple-700 font-medium"
-                        >
-                          <Sparkles className="w-4 h-4" />
-                          <span>Get AI Analysis</span>
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>

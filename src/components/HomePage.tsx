@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { db } from '../lib/firebase';
+import { isUserAdmin } from '../lib/adminConfig';
 import { 
   collection, 
   query, 
@@ -46,6 +47,7 @@ export default function HomePage() {
   const [loadingAI, setLoadingAI] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [showAllAnswers, setShowAllAnswers] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [stats, setStats] = useState({
     totalQuestions: 0,
     totalUsers: 0,
@@ -53,11 +55,18 @@ export default function HomePage() {
   });
 
   useEffect(() => {
-    if (user) {
-      fetchTodaysQuestion();
-      fetchStats();
-    }
-  }, [user]);
+  if (user) {
+    checkAdminStatus();
+    fetchTodaysQuestion();
+    fetchStats();
+  }
+}, [user]);
+
+ const checkAdminStatus = () => {
+  if (user?.email) {
+    setIsAdmin(isUserAdmin(user.email));
+  }
+};
 
   const fetchTodaysQuestion = async () => {
     try {
@@ -243,6 +252,12 @@ export default function HomePage() {
 
   const generateAIAnswer = async () => {
     if (!todaysQuestion || loadingAI || aiAnswer) return;
+    
+    // Only admins can generate AI answers
+    if (!isAdmin) {
+      alert('Only administrators can generate AI answers.');
+      return;
+    }
 
     setLoadingAI(true);
     setAiError(null);
@@ -467,13 +482,15 @@ export default function HomePage() {
                         <span className="font-semibold text-red-900">AI Generation Failed</span>
                       </div>
                       <p className="text-red-700 mb-3">{aiError}</p>
-                      <button
-                        onClick={retryAIGeneration}
-                        className="flex items-center space-x-2 bg-red-100 hover:bg-red-200 text-red-700 font-medium py-2 px-4 rounded-lg transition duration-200"
-                      >
-                        <RefreshCw className="w-4 h-4" />
-                        <span>Retry Generation</span>
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={retryAIGeneration}
+                          className="flex items-center space-x-2 bg-red-100 hover:bg-red-200 text-red-700 font-medium py-2 px-4 rounded-lg transition duration-200"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          <span>Retry Generation</span>
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -509,12 +526,12 @@ export default function HomePage() {
                       </div>
                     </div>
                   ) : (
-                    !loadingAI && !aiError && (
+                    !loadingAI && !aiError && isAdmin && (
                       <div className="bg-white border-2 border-dashed border-purple-200 rounded-lg p-6 text-center">
                         <Bot className="w-12 h-12 text-purple-400 mx-auto mb-3" />
-                        <h3 className="text-lg font-semibold text-gray-900 mb-2">Get AI Expert Analysis</h3>
+                        <h3 className="text-lg font-semibold text-gray-900 mb-2">Generate AI Expert Analysis</h3>
                         <p className="text-gray-600 mb-4">
-                          See how an AI expert would approach this case study
+                          As an admin, you can generate an AI expert analysis for this case study
                         </p>
                         <button
                           onClick={generateAIAnswer}
@@ -660,16 +677,19 @@ export default function HomePage() {
                 <ArrowRight className="w-4 h-4 text-gray-400" />
               </a>
               
-              <a 
-                href="/admin"
-                className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition duration-200"
-              >
-                <div className="flex items-center space-x-3">
-                  <Target className="w-5 h-5 text-gray-600" />
-                  <span className="font-medium">Admin Panel</span>
-                </div>
-                <ArrowRight className="w-4 h-4 text-gray-400" />
-              </a>
+              {/* Only show Admin Panel link to admins */}
+              {isAdmin && (
+                <a 
+                  href="/admin"
+                  className="flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition duration-200"
+                >
+                  <div className="flex items-center space-x-3">
+                    <Target className="w-5 h-5 text-gray-600" />
+                    <span className="font-medium">Admin Panel</span>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-gray-400" />
+                </a>
+              )}
 
               <a 
                 href="/profile"
@@ -696,22 +716,24 @@ export default function HomePage() {
             </ul>
           </div>
 
-          {/* AI Features Info */}
-          <div className="bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
-            <div className="flex items-center space-x-2 mb-3">
-              <Sparkles className="w-5 h-5 text-purple-600" />
-              <h3 className="text-lg font-semibold text-purple-900">AI-Powered Learning</h3>
+          {/* AI Features Info - Only show to admins */}
+          {isAdmin && (
+            <div className="bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6">
+              <div className="flex items-center space-x-2 mb-3">
+                <Sparkles className="w-5 h-5 text-purple-600" />
+                <h3 className="text-lg font-semibold text-purple-900">AI-Powered Learning</h3>
+              </div>
+              <p className="text-sm text-purple-800 mb-3">
+                Get expert-level analysis and insights for every case study using advanced AI.
+              </p>
+              <ul className="text-xs text-purple-700 space-y-1">
+                <li>• Structured frameworks</li>
+                <li>• Step-by-step analysis</li>
+                <li>• Alternative perspectives</li>
+                <li>• Best practices</li>
+              </ul>
             </div>
-            <p className="text-sm text-purple-800 mb-3">
-              Get expert-level analysis and insights for every case study using advanced AI.
-            </p>
-            <ul className="text-xs text-purple-700 space-y-1">
-              <li>• Structured frameworks</li>
-              <li>• Step-by-step analysis</li>
-              <li>• Alternative perspectives</li>
-              <li>• Best practices</li>
-            </ul>
-          </div>
+          )}
         </div>
       </div>
     </div>
