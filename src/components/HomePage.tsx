@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { db } from '../lib/firebase';
 import { isUserAdmin } from '../lib/adminConfig';
+import SimilarCases from './SimilarCases';
 import { 
   collection, 
   query, 
@@ -536,6 +537,19 @@ export default function HomePage() {
                         </button>
                       </div>
                     )
+                  )}
+
+                  {/* SIMILAR CASES SECTION - Only show after user has submitted answer */}
+                  {userAnswer && todaysQuestion && (
+                    <div className="mb-8">
+                      <SimilarCases
+                        questionId={todaysQuestion.id}
+                        questionTitle={todaysQuestion.title}
+                        questionDescription={todaysQuestion.description}
+                        questionType={todaysQuestion.type}
+                        questionDifficulty={todaysQuestion.difficulty}
+                      />
+                    </div>
                   )}
 
                   {allAnswers.filter(a => a.id !== userAnswer.id).length > 0 && (

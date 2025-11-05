@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { db } from '../lib/firebase';
 import { isUserAdmin } from '../lib/adminConfig';
+import SimilarCases from './SimilarCases';
 import { 
   collection, 
   query, 
@@ -487,6 +488,17 @@ export default function PastQuestions() {
                       </div>
                     </div>
                   )}
+
+                  {/* NEW: Similar Cases Component
+                  <div className="mb-6">
+                    <SimilarCases
+                      questionId={question.id}
+                      questionTitle={question.title}
+                      questionDescription={question.description}
+                      questionType={question.type}
+                      questionDifficulty={question.difficulty}
+                    />
+                  </div> */}
 
                   {question.answers.length > 0 ? (
                     <div className="space-y-4">
