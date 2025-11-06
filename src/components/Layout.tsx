@@ -1,9 +1,20 @@
 import { ReactNode, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { signInWithPopup, signOut } from 'firebase/auth';
-import { auth, googleProvider } from '../lib/firebase';
+import { auth, db, googleProvider } from '../lib/firebase';
 import { User, LogOut, Calendar, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
+import { 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc,
+  setDoc, 
+  updateDoc, 
+  serverTimestamp,
+  query,
+  orderBy
+} from 'firebase/firestore';
 
 interface LayoutProps {
   children: ReactNode;
@@ -26,6 +37,20 @@ export default function Layout({ children }: LayoutProps) {
       const result = await signInWithPopup(auth, googleProvider);
       console.log('Sign-in successful:', result.user.displayName);
       console.log('User:', result.user);
+
+      // NEW: Create/update user document in Firestore
+      const userRef = doc(db, 'users', result.user.uid);
+      await setDoc(userRef, {
+        uid: result.user.uid,
+        email: result.user.email,
+        displayName: result.user.displayName,
+        photoURL: result.user.photoURL,
+        lastLogin: serverTimestamp(),
+        createdAt: serverTimestamp(), // Will only be set on first creation
+      }, { merge: true }); // merge: true prevents overwriting createdAt
+      
+      console.log('✅ User document created/updated in Firestore');
+
     } catch (error: any) {
       console.error('Detailed sign-in error:', error);
       console.error('Error code:', error.code);
