@@ -1,4 +1,4 @@
-// src/lib/userService.ts
+// src/lib/userService.ts ts file
 
 import { 
   doc, 
