@@ -1,4 +1,5 @@
-// src/components/AdminVectorDB.tsx
+// src/components/AdminVectorDB.tsx - Client-Side Version (Option 1)
+
 import { useState } from 'react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -12,60 +13,69 @@ export default function AdminVectorDB() {
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [message, setMessage] = useState('');
 
+  // Batch index all cases (Client-Side)
   const indexAllCases = async () => {
+    if (!confirm('This will index ALL questions. This may take a few minutes. Continue?')) {
+      return;
+    }
+
     setIndexing(true);
     setStatus('idle');
-    setMessage('');
+    setMessage('Starting indexing...');
 
     try {
       // Fetch all questions from Firestore
       const questionsRef = collection(db, 'questions');
       const snapshot = await getDocs(questionsRef);
       
-      // Map to Question type
-      const questions: Question[] = snapshot.docs.map(doc => ({
+      const questions = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       } as Question));
 
       setProgress({ current: 0, total: questions.length });
 
-      console.log(`📚 Starting to index ${questions.length} cases...`);
+      let successCount = 0;
+      let failCount = 0;
 
       // Index each question
       for (let i = 0; i < questions.length; i++) {
         const question = questions[i];
         
-        console.log(`🔄 Indexing ${i + 1}/${questions.length}: ${question.title}`);
-        
-        await vectorDBService.indexCase(
-          question.id,
-          question.title,
-          question.description,
-          question.type,
-          question.difficulty
-        );
+        try {
+          await vectorDBService.indexCase(
+            question.id,
+            question.title,
+            question.description,
+            question.type,
+            question.difficulty
+          );
 
-        setProgress({ current: i + 1, total: questions.length });
-        
-        // Rate limiting - prevent API rate limits
-        await new Promise(resolve => setTimeout(resolve, 300));
+          successCount++;
+          setProgress({ current: i + 1, total: questions.length });
+          
+          // Rate limiting - wait 300ms between requests
+          await new Promise(resolve => setTimeout(resolve, 300));
+        } catch (error) {
+          console.error(`Failed to index ${question.id}:`, error);
+          failCount++;
+        }
       }
 
       setStatus('success');
-      setMessage(`✅ Successfully indexed ${questions.length} cases!`);
-      console.log('✅ Indexing complete!');
+      setMessage(`✅ Indexing complete! ${successCount} successful, ${failCount} failed out of ${questions.length} total.`);
     } catch (error) {
-      console.error('❌ Error indexing cases:', error);
+      console.error('Error indexing cases:', error);
       setStatus('error');
-      setMessage(`Failed to index cases: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setMessage('❌ Indexing failed. Check console for details.');
     } finally {
       setIndexing(false);
     }
   };
 
+  // Health check for vector DB
   const testHealthCheck = async () => {
-    setMessage('Checking Pinecone connection...');
+    setMessage('Checking vector database connection...');
     setStatus('idle');
     
     try {
@@ -80,7 +90,25 @@ export default function AdminVectorDB() {
       }
     } catch (error) {
       setStatus('error');
-      setMessage(`❌ Connection failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setMessage('❌ Connection test failed');
+    }
+  };
+
+  // Get indexing statistics
+  const getIndexingStats = async () => {
+    setMessage('Fetching statistics...');
+    setStatus('idle');
+    
+    try {
+      const questionsSnapshot = await getDocs(collection(db, 'questions'));
+      const total = questionsSnapshot.size;
+
+      setStatus('success');
+      setMessage(`📊 Total questions in database: ${total}`);
+    } catch (error) {
+      console.error('Stats error:', error);
+      setStatus('error');
+      setMessage('❌ Failed to fetch stats');
     }
   };
 
@@ -89,15 +117,26 @@ export default function AdminVectorDB() {
       <div className="flex items-center space-x-2 mb-4">
         <Database className="w-6 h-6 text-purple-600" />
         <h3 className="text-xl font-bold text-gray-900">Vector Database Management</h3>
+        <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-full font-medium">
+          Client-Side
+        </span>
       </div>
 
       <div className="space-y-4">
+        {/* Info Box */}
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <h4 className="font-semibold text-blue-900 mb-2">ℹ️ How It Works</h4>
+          <ul className="text-sm text-blue-800 space-y-1">
+            <li>• Converts case titles & descriptions into vector embeddings</li>
+            <li>• Stores vectors in Pinecone for fast similarity search</li>
+            <li>• Enables "Similar Cases" feature for all users</li>
+            <li>• New questions are indexed automatically when created</li>
+          </ul>
+        </div>
+
         {/* Health Check */}
         <div className="bg-gray-50 rounded-lg p-4">
           <h4 className="font-semibold text-gray-900 mb-2">Connection Status</h4>
-          <p className="text-sm text-gray-600 mb-3">
-            Test the connection to your Pinecone vector database.
-          </p>
           <button
             onClick={testHealthCheck}
             disabled={indexing}
@@ -108,12 +147,25 @@ export default function AdminVectorDB() {
           </button>
         </div>
 
-        {/* Indexing */}
+        {/* Statistics */}
+        <div className="bg-gray-50 rounded-lg p-4">
+          <h4 className="font-semibold text-gray-900 mb-2">Database Statistics</h4>
+          <button
+            onClick={getIndexingStats}
+            disabled={indexing}
+            className="flex items-center space-x-2 bg-gray-200 hover:bg-gray-300 disabled:bg-gray-400 text-gray-700 font-medium py-2 px-4 rounded-lg transition duration-200"
+          >
+            <Database className="w-4 h-4" />
+            <span>Get Stats</span>
+          </button>
+        </div>
+
+        {/* Batch Indexing */}
         <div className="bg-purple-50 rounded-lg p-4">
-          <h4 className="font-semibold text-gray-900 mb-2">Index All Cases</h4>
+          <h4 className="font-semibold text-gray-900 mb-2">Batch Index All Cases</h4>
           <p className="text-sm text-gray-600 mb-3">
-            This will create vector embeddings for all cases in Firestore and store them in Pinecone.
-            Takes approximately 1 minute per 10 cases.
+            Index all questions in the database. Takes ~1 minute per 10 cases.
+            Use this if you have unindexed questions or want to re-index everything.
           </p>
           
           <button
@@ -129,19 +181,19 @@ export default function AdminVectorDB() {
             ) : (
               <>
                 <Database className="w-4 h-4" />
-                <span>Start Indexing</span>
+                <span>Start Batch Indexing</span>
               </>
             )}
           </button>
 
           {/* Progress Bar */}
-          {indexing && (
+          {indexing && progress.total > 0 && (
             <div className="mt-4">
               <div className="w-full bg-gray-200 rounded-full h-2">
                 <div
                   className="bg-purple-500 h-2 rounded-full transition-all duration-300"
                   style={{
-                    width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%`
+                    width: `${(progress.current / progress.total) * 100}%`
                   }}
                 />
               </div>
@@ -160,8 +212,9 @@ export default function AdminVectorDB() {
             'bg-blue-50 border border-blue-200'
           }`}>
             <div className="flex items-start space-x-2">
-              {status === 'success' && <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />}
-              {status === 'error' && <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />}
+              {status === 'success' && <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0" />}
+              {status === 'error' && <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />}
+              {status === 'idle' && <Loader className="w-5 h-5 text-blue-600 animate-spin flex-shrink-0" />}
               <p className={`text-sm ${
                 status === 'success' ? 'text-green-800' :
                 status === 'error' ? 'text-red-800' :
@@ -173,25 +226,14 @@ export default function AdminVectorDB() {
           </div>
         )}
 
-        {/* Info Box */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h4 className="font-semibold text-blue-900 mb-2">ℹ️ How It Works</h4>
-          <ul className="text-sm text-blue-800 space-y-1">
-            <li>• Converts case titles & descriptions into vector embeddings</li>
-            <li>• Stores vectors in Pinecone for fast similarity search</li>
-            <li>• Enables "Similar Cases" feature for all users</li>
-            <li>• Re-run indexing when adding new cases</li>
-            <li>• Uses OpenAI text-embedding-3-small model (1536 dimensions)</li>
-          </ul>
-        </div>
-
-        {/* Cost Info */}
+        {/* Usage Notes */}
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <h4 className="font-semibold text-yellow-900 mb-2">💰 Cost Estimate</h4>
+          <h4 className="font-semibold text-yellow-900 mb-2">📝 Usage Notes</h4>
           <ul className="text-sm text-yellow-800 space-y-1">
-            <li>• OpenAI embeddings: ~$0.01 per 10 cases</li>
-            <li>• Pinecone: Free tier (up to 100K vectors)</li>
-            <li>• Total: Essentially free for demo/MVP</li>
+            <li>• New questions are automatically indexed when created</li>
+            <li>• Use "Batch Index All" if you have existing unindexed questions</li>
+            <li>• Batch indexing may take several minutes for many questions</li>
+            <li>• Don't close the browser while batch indexing is in progress</li>
           </ul>
         </div>
       </div>

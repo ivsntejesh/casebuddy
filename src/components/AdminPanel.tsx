@@ -1,6 +1,9 @@
+// src/components/AdminPanel.tsx - Complete code with Cloud Functions support
+
 import { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { db } from '../lib/firebase';
+import { vectorDBService } from '../lib/vectordb';
 import AdminVectorDB from './AdminVectorDB';
 import { 
   collection, 
@@ -21,7 +24,9 @@ import {
   Calendar,
   BookOpen,
   AlertCircle,
-  CheckCircle
+  CheckCircle,
+  RefreshCw,
+  Loader
 } from 'lucide-react';
 
 export default function AdminPanel() {
@@ -40,10 +45,10 @@ export default function AdminPanel() {
     isActive: false
   });
 
-  // Check if user is admin (you can modify this logic)
+  // Check if user is admin
   const isAdmin = user?.email === 'ithatejesh@gmail.com' || 
-                  user?.email?.includes('@gmail.') ||
-                  process.env.NODE_ENV === 'development'; // Allow in dev mode
+                  user?.email === 'ivsntejesh@gmail.com' ||
+                  process.env.NODE_ENV === 'development';
 
   useEffect(() => {
     if (isAdmin) {
@@ -72,48 +77,75 @@ export default function AdminPanel() {
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newQuestion.title.trim() || !newQuestion.description.trim()) {
-      setMessage({ type: 'error', text: 'Please fill in all required fields' });
-      return;
-    }
+  e.preventDefault();
+  if (!newQuestion.title.trim() || !newQuestion.description.trim()) {
+    setMessage({ type: 'error', text: 'Please fill in all required fields' });
+    return;
+  }
 
-    setSaving(true);
-    setMessage(null);
+  setSaving(true);
+  setMessage(null);
 
-    try {
-      // If setting this question as active, deactivate all others
-      if (newQuestion.isActive) {
-        const activeQuestions = questions.filter(q => q.isActive);
-        for (const question of activeQuestions) {
-          await updateDoc(doc(db, 'questions', question.id), { isActive: false });
-        }
+  try {
+    // If setting this question as active, deactivate all others
+    if (newQuestion.isActive) {
+      const activeQuestions = questions.filter(q => q.isActive);
+      for (const question of activeQuestions) {
+        await updateDoc(doc(db, 'questions', question.id), { isActive: false });
       }
-
-      await addDoc(collection(db, 'questions'), {
-        ...newQuestion,
-        datePosted: serverTimestamp(),
-        createdBy: user?.uid
-      });
-
-      setMessage({ type: 'success', text: 'Question added successfully!' });
-      setNewQuestion({
-        title: '',
-        description: '',
-        type: 'consulting',
-        difficulty: 'medium',
-        isActive: false
-      });
-
-      // Refresh questions list
-      fetchAllQuestions();
-    } catch (error) {
-      console.error('Error adding question:', error);
-      setMessage({ type: 'error', text: 'Failed to add question. Please try again.' });
-    } finally {
-      setSaving(false);
     }
-  };
+
+    // Add question to Firestore
+    const docRef = await addDoc(collection(db, 'questions'), {
+      ...newQuestion,
+      datePosted: serverTimestamp(),
+      createdBy: user?.uid
+    });
+
+    console.log('✅ Question created with ID:', docRef.id);
+
+    // 🆕 AUTO-INDEX: Add to vector database
+    try {
+      console.log('🔄 Auto-indexing case to vector database...');
+      
+      await vectorDBService.indexCase(
+        docRef.id,
+        newQuestion.title,
+        newQuestion.description,
+        newQuestion.type,
+        newQuestion.difficulty
+      );
+      
+      console.log('✅ Case indexed successfully!');
+      setMessage({ 
+        type: 'success', 
+        text: '✅ Question added and indexed for similar case recommendations!' 
+      });
+    } catch (indexError) {
+      console.error('⚠️ Failed to index case:', indexError);
+      setMessage({ 
+        type: 'success', 
+        text: '✅ Question added! (Note: Vector indexing failed - similar cases may not show immediately)' 
+      });
+    }
+
+    setNewQuestion({
+      title: '',
+      description: '',
+      type: 'consulting',
+      difficulty: 'medium',
+      isActive: false
+    });
+
+    // Refresh questions list
+    fetchAllQuestions();
+  } catch (error) {
+    console.error('Error adding question:', error);
+    setMessage({ type: 'error', text: 'Failed to add question. Please try again.' });
+  } finally {
+    setSaving(false);
+  }
+};
 
   const toggleQuestionActive = async (questionId: string, currentActiveState: boolean) => {
     try {
@@ -218,6 +250,7 @@ export default function AdminPanel() {
         <p className="text-gray-600">Manage case study questions and content</p>
       </div>
 
+      {/* Vector DB Management */}
       <div className="mb-8">
         <AdminVectorDB />
       </div>
@@ -376,7 +409,7 @@ export default function AdminPanel() {
                     {question.description}
                   </p>
                   
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between mb-2">
                     <div className="flex space-x-2">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${getTypeColor(question.type)}`}>
                         {question.type}
@@ -395,6 +428,30 @@ export default function AdminPanel() {
                       <span>{formatDate(question.datePosted)}</span>
                     </div>
                   </div>
+
+                  {/* NEW: Vector Indexing Status
+                  <div className="flex items-center space-x-2 pt-2 border-t border-gray-100">
+                    {question.vectorIndexed ? (
+                      <span className="flex items-center space-x-1 text-xs text-green-600">
+                        <CheckCircle size={12} />
+                        <span>Indexed for Similar Cases</span>
+                      </span>
+                    ) : question.vectorIndexError ? (
+                      <button
+                        onClick={() => reindexQuestion(question.id)}
+                        className="flex items-center space-x-1 text-xs text-red-600 hover:text-red-700 hover:underline"
+                        title={question.vectorIndexError}
+                      >
+                        <AlertCircle size={12} />
+                        <span>Index Failed - Click to Retry</span>
+                      </button>
+                    ) : (
+                      <span className="flex items-center space-x-1 text-xs text-yellow-600">
+                        <Loader size={12} className="animate-spin" />
+                        <span>Auto-indexing in progress...</span>
+                      </span>
+                    )}
+                  </div> */}
                 </div>
               ))
             )}

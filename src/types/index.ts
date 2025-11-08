@@ -8,6 +8,8 @@ export interface User {
 }
 
 export interface Question {
+  vectorIndexed: any;
+  vectorIndexError: any;
   id: string;
   title: string;
   description: string;
